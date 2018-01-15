@@ -22,6 +22,26 @@ class MVNParam(vb.ModelParamsDict):
     def entropy(self):
         return ef.multivariate_normal_entropy(self['info'].get())
 
+class MVNDiagCovParam(vb.ModelParamsDict):
+	def __init__(self, name='', dim=2, min_info=0.0):
+		super().__init__(name=name)
+		self.__dim = dim
+		self.push_param(vb.VectorParam('mean', dim))
+		self.push_param(vb.ArrayParam('info', dim, lb=min_info))
+
+	def e(self):
+		return self['mean'].get()
+	def cov(self):
+		return np.linalg.inv(np.diag(self['info'].get()))
+
+	def e_outer(self):
+		mean = self['mean'].get()
+		e_outer = np.outer(mean, mean) + self.cov()
+		return 0.5 * (e_outer + e_outer.transpose())
+
+	def entropy(self):
+		# print(ef.multivariate_normal_entropy(np.diag(self['info'].get())))	
+		return -0.5*np.sum(np.log(self['info'].get()))
 
 class UVNParam(vb.ModelParamsDict):
     def __init__(self, name='', min_info=0.0):
