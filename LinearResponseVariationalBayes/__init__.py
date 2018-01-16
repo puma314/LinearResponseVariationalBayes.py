@@ -15,7 +15,7 @@ from LinearResponseVariationalBayes.ParameterDictionary import ModelParamsDict
 
 from LinearResponseVariationalBayes.NormalParams import \
     UVNParam, UVNParamVector, UVNParamArray, UVNMomentParamArray, \
-    MVNParam, MVNArray
+    MVNParam, MVNArray, MVNDiagCovParam
 
 from LinearResponseVariationalBayes.GammaParams import GammaParam
 
