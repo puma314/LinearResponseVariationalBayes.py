@@ -15,9 +15,11 @@ class Model(object):
         self.dim = dim
         self.x = vb.VectorParam('x', size=dim, lb=-2.0, ub=5.0)
         self.y = vb.VectorParam('y', size=dim, lb=-2.0, ub=5.0)
-        # self.x = vb.VectorParam('x', size=dim)
-        # self.y = vb.VectorParam('y', size=dim)
         self.a_mat = np.full((dim, dim), 0.1) + np.eye(dim)
+
+        # For testing the Jacobian
+        self.b_mat = self.a_mat[0:(dim - 1), 0:dim]
+
         self.set_inits()
 
         self.opt_x = np.linspace(1., 2., self.dim)
@@ -41,6 +43,10 @@ class Model(object):
     def f(self):
         return self.f_of_x(self.x.get())
 
+    def get_x_vec(self):
+        # For testing the Jacobian
+        return np.matmul(self.b_mat, self.x.get())
+
     def f_conditioned(self):
         # Note that
         # df / dy = (dx' / dy) df / dx = (dy / dx')^{-1} df / dx
@@ -49,6 +55,31 @@ class Model(object):
         self.y.set_free(y_free)
         return self.f_of_x(self.y.get())
 
+
+class TwoParamModel(object):
+    def __init__(self, dim=3):
+        self.a = np.random.random((dim, dim))
+        self.a = np.matmul(self.a, np.transpose(self.a)) + np.eye(dim)
+
+        self.par = vb.ModelParamsDict()
+        self.par.push_param(vb.VectorParam('x', size=dim, lb=0))
+        self.par.push_param(vb.VectorParam('y', size=dim, lb=1))
+
+    def set_random(self):
+        self.par.set_free(np.random.random(self.par.free_size()))
+
+    def fun(self):
+        x = self.par['x'].get()
+        y = self.par['y'].get()
+        return np.matmul(np.matmul(np.transpose(x), self.a), y)
+
+    def convert_y_to_x(self, x):
+        return x ** 2
+
+    def set_y_from_x(self):
+        # Used for testing the ParameterConverter class.
+        self.par['y'].set_vector(
+            self.convert_y_to_x(self.par['x'].get_vector()))
 
 
 class TestObjectiveClass(unittest.TestCase):
@@ -71,12 +102,23 @@ class TestObjectiveClass(unittest.TestCase):
         np_test.assert_array_almost_equal(
             np.matmul(hess, grad), objective.fun_free_hvp(x_free, grad))
 
-        model.set_opt()
         self.assertTrue(objective.fun_vector(x_vec) > 0.0)
         grad = objective.fun_vector_grad(x_vec)
         hess = objective.fun_vector_hessian(x_vec)
         np_test.assert_array_almost_equal(
             np.matmul(hess, grad), objective.fun_vector_hvp(x_free, grad))
+
+        # Test Jacobians.
+        vec_objective = obj_lib.Objective(par=model.x, fun=model.get_x_vec)
+        vec_jac = vec_objective.fun_vector_jacobian(x_vec)
+        np_test.assert_array_almost_equal(model.b_mat, vec_jac)
+
+        free_jac = vec_objective.fun_free_jacobian(x_free)
+        x_free_to_vec_jac = \
+            model.x.free_to_vector_jac(x_free).todense()
+        np_test.assert_array_almost_equal(
+            np.matmul(model.b_mat, np.transpose(x_free_to_vec_jac)),
+            free_jac)
 
         # Test the preconditioning
         preconditioner = 2.0 * np.eye(model.dim)
@@ -106,6 +148,96 @@ class TestObjectiveClass(unittest.TestCase):
             fun_free_cond_hvp(x_free, grad_cond),
             objective.fun_free_hvp_cond(x_free, grad_cond),
             err_msg='Conditioned Hessian vector product values')
+
+    def test_parameter_converter(self):
+        model = TwoParamModel()
+        model.set_random()
+        model.set_y_from_x()
+        x_free = model.par['x'].get_free()
+        y_free = model.par['y'].get_free()
+        x_vec = model.par['x'].get_vector()
+        y_vec = model.par['y'].get_vector()
+
+        param_converter = obj_lib.ParameterConverter(
+            model.par['x'], model.par['y'], model.set_y_from_x)
+
+        np_test.assert_array_almost_equal(
+            param_converter.converter_vec_to_vec(x_vec), y_vec)
+        np_test.assert_array_almost_equal(
+            param_converter.converter_vec_to_free(x_vec), y_free)
+        np_test.assert_array_almost_equal(
+            param_converter.converter_free_to_vec(x_free), y_vec)
+        np_test.assert_array_almost_equal(
+            param_converter.converter_free_to_free(x_free), y_free)
+
+        # The function convert_y_to_x corrseponds to the vector to vector
+        # map.  Use the free to vec Jacobians to convert to the other maps.
+        get_converter_jacobian = autograd.jacobian(model.convert_y_to_x)
+        x_free_to_vec_jac = \
+            model.par['x'].free_to_vector_jac(x_free).todense()
+        y_free_to_vec_jac = \
+            model.par['y'].free_to_vector_jac(y_free).todense()
+
+        vec_to_vec_jac = get_converter_jacobian(x_vec)
+        np_test.assert_array_almost_equal(
+            vec_to_vec_jac,
+            param_converter.vec_to_vec_jacobian(x_vec))
+
+        free_to_vec_jac = np.matmul(vec_to_vec_jac, x_free_to_vec_jac)
+        np_test.assert_array_almost_equal(
+            free_to_vec_jac,
+            param_converter.free_to_vec_jacobian(x_free))
+
+        np_test.assert_array_almost_equal(
+            np.linalg.solve(y_free_to_vec_jac, vec_to_vec_jac),
+            param_converter.vec_to_free_jacobian(x_vec))
+
+        np_test.assert_array_almost_equal(
+            np.linalg.solve(y_free_to_vec_jac, free_to_vec_jac),
+            param_converter.free_to_free_jacobian(x_free))
+
+
+    def test_two_parameter_objective(self):
+        model = TwoParamModel()
+        model.set_random()
+
+        objective_full = obj_lib.Objective(model.par, model.fun)
+
+        objective_x = obj_lib.Objective(model.par['x'], model.fun)
+        objective_y = obj_lib.Objective(model.par['y'], model.fun)
+
+        objective = obj_lib.TwoParameterObjective(
+            model.par['x'], model.par['y'], model.fun)
+
+        par_free = model.par.get_free()
+        par_vec = model.par.get_vector()
+        x_free = model.par['x'].get_free()
+        y_free = model.par['y'].get_free()
+        x_vec = model.par['x'].get_vector()
+        y_vec = model.par['y'].get_vector()
+
+        np_test.assert_array_almost_equal(
+            model.fun(), objective.fun_free(x_free, y_free))
+        np_test.assert_array_almost_equal(
+            model.fun(), objective.fun_free(x_free, y_free))
+        np_test.assert_array_almost_equal(
+            model.fun(), objective.fun_vector(x_vec, y_vec))
+
+        np_test.assert_array_almost_equal(
+            objective.ag_fun_free_grad1(x_free, y_free),
+            objective_x.ag_fun_free_grad(x_free))
+
+        np_test.assert_array_almost_equal(
+            objective.ag_fun_free_grad2(x_free, y_free),
+            objective_y.ag_fun_free_grad(y_free))
+
+        np_test.assert_array_almost_equal(
+            objective.ag_fun_vector_grad1(x_vec, y_vec),
+            objective_x.ag_fun_vector_grad(x_vec))
+
+        np_test.assert_array_almost_equal(
+            objective.ag_fun_vector_grad2(x_vec, y_vec),
+            objective_y.ag_fun_vector_grad(y_vec))
 
 
     def run_optimization_tests(self, use_sparse=False):
